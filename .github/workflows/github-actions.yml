@@ -1,27 +1,51 @@
 name: assignment-test
-on:
-    push:
-        tags-ignore:
-            - '*'
-        branches:
-            - '*'
+on: [push]
+
 jobs:
-    full-test:
-        container: cuaesd/aesd-autotest:24-assignment4-buildroot
-        runs-on: self-hosted
-        timeout-minutes: 120
-        steps:
-          - uses: actions/checkout@v2
-          - name: Checkout submodules
-            run: git submodule update --init --recursive
-          - uses: webfactory/ssh-agent@v0.5.3
-            with:
-                ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
-          - name: Run full test
-            env:
-              GIT_SSH_COMMAND: "ssh -o StrictHostKeyChecking=no"
-            run: ./full-test.sh
-          - name: Cleanup
-            if: always()
-            run: |
-              ssh-add -D
+  full-test:
+    container: cuaesd/aesd-autotest:assignment4-buildroot
+    runs-on: self-hosted
+
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          submodules: recursive
+
+      - name: Setup SSH for root (known_hosts + key)
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p /root/.ssh
+          chmod 700 /root/.ssh
+
+          # Fix/refresh github.com host keys to avoid host key mismatch issues
+          ssh-keygen -f /root/.ssh/known_hosts -R github.com || true
+          ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> /root/.ssh/known_hosts
+          chmod 600 /root/.ssh/known_hosts
+
+          # Install the private key for root
+          if [ -z "${SSH_PRIVATE_KEY:-}" ]; then
+            echo "ERROR: SSH_PRIVATE_KEY secret is empty/not set"
+            exit 1
+          fi
+          printf '%s\n' "$SSH_PRIVATE_KEY" > /root/.ssh/id_ed25519
+          chmod 600 /root/.ssh/id_ed25519
+
+          # Quick check: should authenticate as your GitHub user
+          ssh -i /root/.ssh/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -T git@github.com || true
+
+      - name: Validate private key format (root)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh-keygen -lf /root/.ssh/id_ed25519 >/dev/null
+          echo "Key parses OK"
+
+      - name: Run full test
+        shell: bash
+        env:
+          GIT_SSH_COMMAND: "ssh -i /root/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+        run: ./full-test.sh
