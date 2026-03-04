@@ -1,51 +1,43 @@
 name: assignment-test
-on: [push]
+on:
+  push:
+    tags-ignore:
+      - '*'
+    branches:
+      - '*'
 
 jobs:
   full-test:
-    container: cuaesd/aesd-autotest:assignment4-buildroot
     runs-on: self-hosted
-
+    container: cuaesd/aesd-autotest:24-assignment4-buildroot
+    timeout-minutes: 360
     steps:
-      - uses: actions/checkout@v2
+      - name: Configure SSH agent
+        uses: webfactory/ssh-agent@v0.5.3
         with:
-          submodules: recursive
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+          # If the key has a passphrase:
+          # ssh-passphrase: ${{ secrets.SSH_PASSPHRASE }}
 
-      - name: Setup SSH for root (known_hosts + key)
-        shell: bash
-        env:
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      - name: Fix known_hosts for GitHub
         run: |
-          set -euo pipefail
-
           mkdir -p /root/.ssh
-          chmod 700 /root/.ssh
-
-          # Fix/refresh github.com host keys to avoid host key mismatch issues
           ssh-keygen -f /root/.ssh/known_hosts -R github.com || true
+          ssh-keygen -f /root/.ssh/known_hosts -R ssh.github.com || true
           ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> /root/.ssh/known_hosts
-          chmod 600 /root/.ssh/known_hosts
+          ssh-keyscan -t rsa,ecdsa,ed25519 ssh.github.com >> /root/.ssh/known_hosts || true
+          chmod 644 /root/.ssh/known_hosts
 
-          # Install the private key for root
-          if [ -z "${SSH_PRIVATE_KEY:-}" ]; then
-            echo "ERROR: SSH_PRIVATE_KEY secret is empty/not set"
-            exit 1
-          fi
-          printf '%s\n' "$SSH_PRIVATE_KEY" > /root/.ssh/id_ed25519
-          chmod 600 /root/.ssh/id_ed25519
-
-          # Quick check: should authenticate as your GitHub user
-          ssh -i /root/.ssh/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -T git@github.com || true
-
-      - name: Validate private key format (root)
-        shell: bash
-        run: |
-          set -euo pipefail
-          ssh-keygen -lf /root/.ssh/id_ed25519 >/dev/null
-          echo "Key parses OK"
+      - name: Checkout repository (with submodules over SSH)
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          submodules: recursive
+          fetch-depth: 0
 
       - name: Run full test
-        shell: bash
-        env:
-          GIT_SSH_COMMAND: "ssh -i /root/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
         run: ./full-test.sh
+
+      - name: Cleanup
+        if: always()
+        run: ssh-add -D
